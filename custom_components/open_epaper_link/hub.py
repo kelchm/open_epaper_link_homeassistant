@@ -5,7 +5,6 @@ import websocket
 import socket
 import aiohttp
 import async_timeout
-import backoff
 import time
 import json
 import logging
@@ -103,37 +102,13 @@ class Hub:
             else:
                 tagname = tagmac
             #required for automations
-            hwmap = {
-                0: ["M2 1.54\"", 152, 152],
-                1: ["M2 2.9\"",  296, 128],
-                2: ["M2 4.2\"",  400, 300],
-                5: ["M2 7.4\"",  640, 384],
-                17: ["M2 2.9\" (NFC)", 296, 128],
-                26: ["M2 7.4\" (outdated)",  640, 384],
-                33: ["M2 2.9\"", 296, 128],
-                38: ["M2 7.4 BW\"",  640, 384],
-                46: ["M3 9.7\"",  960, 672],
-                47: ["M3 4.3\"",  522, 152],
-                48: ["M3 1.6\"",  200, 200],
-                49: ["M3 2.2\"",  296, 160],
-                51: ["M3 2.9\"",  384, 168],
-                52: ["M3 4.2\"",  400, 300],
-                53: ["M3 6.0\"",  600, 448],
-                54: ["M3 7.5\"",  800, 480],
-                85: ["HS BWR 2.13\"",  256, 128],
-                96: ["HS BWY 3.5\"",  384, 184],
-                97: ["HS BWR 3.5\"",  384, 184],
-                98: ["HS BW 3.5\"",  384, 184],
-                178: ["Gicisky BLE EPD BW 2.9\"",  296, 128],
-                179: ["Gicisky BLE EPD BWR 2.9\"",  296, 128],
-                181: ["Gicisky BLE EPD BWR 4.2\"",  400, 300],
-                190: ["ATC MiThermometer BLE",  6, 8],
-                224: ["AP display",  320, 170],
-                225: ["AP display",  160, 80],
-                240: ["Segmented",  0, 0]
-            }
-            if hwType in hwmap:
-                self._hass.states.set(DOMAIN + "." + tagmac, hwType,{
+            hwmap = {}
+
+            if hwType not in hwmap:
+                _LOGGER.info("Id not in hwmap, attempting to fetch..." +str(hwType))
+                tagTypeDef = asyncio.run(self.fetch_tag_data(hwType))
+                if tagTypeDef:
+                    self._hass.states.set(DOMAIN + "." + tagmac, hwType,{
                     "icon": "mdi:fullscreen",
                     "friendly_name": tagname,
                     "attr_unique_id": tagmac,
@@ -144,20 +119,18 @@ class Hub:
                     },
                     "should_poll": False,
                     "hwtype": hwType,
-                    "hwstring": hwmap[hwType][0],
-                    "width": hwmap[hwType][1],
-                    "height": hwmap[hwType][2],
+                    "hwstring": tagTypeDef["name"],
+                    "width": tagTypeDef["width"],
+                    "height": tagTypeDef["height"],
                 })
-            else:
-                _LOGGER.warning("Id not in hwmap, please open an issue on github about this." +str(hwType))
-                
+
             self.data[tagmac] = dict()
             self.data[tagmac]["temperature"] = temperature
             self.data[tagmac]["rssi"] = RSSI
             self.data[tagmac]["battery"] = batteryMv
             self.data[tagmac]["lqi"] = LQI
             self.data[tagmac]["hwtype"] = hwType
-            self.data[tagmac]["hwstring"] = hwmap[hwType][0]
+            self.data[tagmac]["hwstring"] = tagTypeDef["name"]
             self.data[tagmac]["contentmode"] = contentMode
             self.data[tagmac]["lastseen"] = lastseen
             self.data[tagmac]["nextupdate"] = nextupdate
@@ -178,7 +151,7 @@ class Hub:
             if tagmac not in self.esls:
                 self.esls.append(tagmac)
                 loop = self.eventloop
-                asyncio.run_coroutine_threadsafe(self.reloadcfgett(),loop)            
+                asyncio.run_coroutine_threadsafe(self.reloadcfgett(),loop)
             #fire event with the wakeup reason
             lut = {0: "TIMED",1: "BOOT",2: "GPIO",3: "NFC",4: "BUTTON1",5: "BUTTON2",252: "FIRSTBOOT",253: "NETWORK_SCAN",254: "WDT_RESET"}
             event_data = {
@@ -231,3 +204,17 @@ class Hub:
         await self._hass.config_entries.async_unload_platforms(self._cfgenty, ["sensor","camera"])
         await self._hass.config_entries.async_forward_entry_setups(self._cfgenty, ["sensor","camera"])
         return True
+
+    async def fetch_tag_data(self, hwType: int) -> dict:
+        url = "http://" + self._host + "/tagtypes/" + hex(hwType)[2:] + ".json"
+        _LOGGER.warning(f"fetching tag data from {url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.text()
+                    tag_data = json.loads(data)
+                    return tag_data
+                else:
+                    print(f"Failed to retrieve tag data. HTTP status: {response.status}")
+                    return None
+
